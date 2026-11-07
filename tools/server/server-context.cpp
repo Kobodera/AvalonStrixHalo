@@ -1392,6 +1392,71 @@ private:
                 params_base.n_cache_reuse = 0;
                 SRV_WRN("%s\n", "cache_reuse is not supported by multimodal, it will be disabled");
             }
+
+            // vision warmup: encode a synthetic image at boot, before hosted MoE serves real requests.
+            // removes two cold costs:
+            //  (1) the encoder's first cuBLASLt product of a vision shape loads its algo module while
+            //      holding a driver lock; if a hosted kernel is spinning on-device for a moved-expert
+            //      fill at that moment, the fill's copy queues behind that lock and the load waits on
+            //      the device - a cycle under WDDM. the text warmup has drained here, so nothing is
+            //      resident to collide with.
+            //  (2) vision tokens route to a different expert set than the text warmup touched, so the
+            //      first real image streams those experts cold over PCIe (~76s at 14 t/s). decoding the
+            //      embeddings here warms that routing (~100s of boot cost).
+            // GGML_CUDA_MOE_VISION_WARMUP gates the encode (keep on); GGML_CUDA_MOE_VISION_DECODER_WARMUP
+            // gates the decoder pass (set 0 for a fast boot if a slow first image is fine).
+            static const bool vision_warmup = !getenv("GGML_CUDA_MOE_VISION_WARMUP") || atoi(getenv("GGML_CUDA_MOE_VISION_WARMUP")) != 0;
+            static const bool vision_dec_warmup = !getenv("GGML_CUDA_MOE_VISION_DECODER_WARMUP")
+                                                || atoi(getenv("GGML_CUDA_MOE_VISION_DECODER_WARMUP")) != 0;
+            if (vision_warmup && params_base.warmup && mtmd_support_vision(mctx)) {
+                SRV_INF("warming up the vision tower%s - please wait ...\n",
+                        vision_dec_warmup ? " and decoder" : "");
+                const uint32_t nx = 512;
+                const uint32_t ny = 512;
+                std::vector<unsigned char> img((size_t) nx * ny * 3, 128);
+                mtmd::bitmap_ptr bitmap(mtmd_bitmap_init(nx, ny, img.data()));
+                mtmd::input_chunks_ptr chunks(mtmd_input_chunks_init());
+                if (bitmap && chunks) {
+                    mtmd_input_text text;
+                    text.text          = mtmd_get_marker(mctx);
+                    text.text_len      = strlen(text.text);
+                    text.add_special   = true;
+                    text.parse_special = true;
+                    const mtmd_bitmap * bitmaps[] = { bitmap.get() };
+                    if (mtmd_tokenize(mctx, chunks.get(), &text, bitmaps, 1) == 0) {
+                        const int32_t n_chunks = (int32_t) mtmd_input_chunks_size(chunks.get());
+                        llama_pos n_past = 0;
+                        for (int32_t i = 0; i < n_chunks; i++) {
+                            const mtmd_input_chunk * chunk = mtmd_input_chunks_get(chunks.get(), i);
+                            if (chunk && mtmd_input_chunk_get_type(chunk) == MTMD_INPUT_CHUNK_TYPE_IMAGE) {
+                                const int32_t eres = mtmd_encode_chunk(mctx, chunk);
+                                if (eres != 0) {
+                                    SRV_WRN("vision warmup: encode failed (code %d), continuing anyway\n", eres);
+                                    continue;
+                                }
+                                float * embd = vision_dec_warmup ? mtmd_get_output_embd(mctx) : nullptr;
+                                if (embd) {
+                                    llama_pos new_n_past = n_past;
+                                    const int32_t dres = mtmd_helper_decode_image_chunk(
+                                        mctx, ctx_tgt, chunk, embd, n_past, 0 /* seq_id */,
+                                        llama_n_batch(ctx_tgt), &new_n_past, nullptr, nullptr);
+                                    if (dres != 0) {
+                                        SRV_WRN("vision warmup: decoder pass failed (code %d), continuing anyway\n", dres);
+                                    } else {
+                                        n_past = new_n_past;
+                                    }
+                                }
+                            }
+                        }
+                        // drain the warmup decode and drop its KV so real requests start clean
+                        llama_synchronize(ctx_tgt);
+                        llama_memory_clear(llama_get_memory(ctx_tgt), true);
+                    } else {
+                        SRV_WRN("%s", "vision warmup: tokenize failed, continuing anyway\n");
+                    }
+                }
+                SRV_INF("%s", "vision warmup done\n");
+            }
         }
 
         if (!llama_memory_can_shift(llama_get_memory(ctx_tgt))) {
