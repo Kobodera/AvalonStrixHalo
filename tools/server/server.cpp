@@ -33,6 +33,8 @@ static inline void signal_handler(int signal) {
         exit(1);
     }
 
+    fprintf(stderr, "\nInterrupt received: shutting down. Do NOT press Ctrl+C again: the expert cache heat save runs before exit.\n");
+    fflush(stderr);
     shutdown_handler(signal);
 }
 

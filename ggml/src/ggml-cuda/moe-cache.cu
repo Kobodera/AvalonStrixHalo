@@ -755,6 +755,12 @@ struct moe_cache_session {
     uint64_t profile_generation = 0;
     std::unordered_map<uint64_t, std::vector<int32_t>> profile_hot;
     std::unordered_map<uint64_t, std::vector<uint32_t>> observed_heat;
+    // periodic heat autosave (GGML_CUDA_MOE_CACHE_PROFILE_SAVE_INTERVAL_S, default 60 s): the thread saves the heat
+    // while the session runs, so a hard kill loses at most one interval. heat_saved is the total already persisted:
+    // each save writes only the heat counted since the last one, so the periodic saves and the final one never double
+    // count. The thread stops on session.stopping.
+    std::thread heat_saver;
+    std::vector<uint64_t> heat_saved;
 
     std::mutex mu;
     std::mutex fill_mu;
@@ -3010,6 +3016,8 @@ static void moe_cache_attach_kv(moe_cache_session & session, moe_cache_device & 
 static void moe_cache_preload(const moe_cache_session & session, moe_cache_device & device);
 static void moe_cache_arena_seed(moe_cache_device & device);
 static void moe_cache_profile_save_heat(moe_cache_session & session);
+static void moe_cache_heat_saver(moe_cache_session & session);
+static const char * moe_cache_profile_save_path();
 
 // Every expert tensor registered in place (hipHostRegister, read-only; GGML_CUDA_MOE_PIN=0 disables), once the
 // tensors are known and before any graph runs:
@@ -4395,6 +4403,9 @@ static void * moe_cache_session_create(
             }
             throw;
         }
+        if (moe_cache_profile_save_path()) {
+            result->heat_saver = std::thread(moe_cache_heat_saver, std::ref(*result));
+        }
         session.release();
         return result;
     } catch (...) {
@@ -4544,6 +4555,9 @@ static void moe_cache_session_destroy(void * opaque) {
         if (device_ptr->worker_started && device_ptr->worker.joinable()) {
             device_ptr->worker.join();
         }
+    }
+    if (session->heat_saver.joinable()) {
+        session->heat_saver.join();
     }
     moe_cache_profile_save_heat(*session);
     {
@@ -5819,26 +5833,43 @@ static void moe_cache_heat_note(moe_cache_device & device, int layer_number, con
     }
 }
 
-// GGML_CUDA_MOE_CACHE_PROFILE_SAVE=FILE: at the end of the session, the routed rows counted, added to the file's (a
-// version 2 ranking of the same model), written back as a version 2 ranking (GGML_CUDA_MOE_CACHE_PRELOAD reads it)
+// GGML_CUDA_MOE_CACHE_PROFILE_SAVE=FILE: the routed rows counted, added to the file's (a version 2 ranking of the
+// same model), written back as a version 2 ranking (GGML_CUDA_MOE_CACHE_PRELOAD reads it). Called periodically by
+// the saver thread and once at the end of the session: session.heat_saved holds what the previous saves persisted,
+// so each call writes only the heat counted since, and the calls never double count.
+// global: serializes saves across the several sessions (main, draft, vision) writing the same file, so a
+// read-merge-write of one session cannot be lost under another's.
+static std::mutex g_heat_save_mu;
+
 static void moe_cache_profile_save_heat(moe_cache_session & session) {
     const char * path = moe_cache_profile_save_path();
     if (!path || session.devices.empty() || session.devices[0]->heat.empty()) {
         return;
     }
-    // every device's counts (with several GPUs each one holds its own layers')
+    std::lock_guard<std::mutex> save_lock(g_heat_save_mu);
     const int64_t ne = session.devices[0]->heat_experts;
+    // the heat is counted under the session lock: snapshot the total there, the file I/O runs outside it
     std::vector<uint64_t> total;
-    for (const auto & d : session.devices) {
-        if (d->heat_experts != ne) {
-            continue;
+    {
+        std::lock_guard<std::mutex> lock(session.mu);
+        // every device's counts (with several GPUs each one holds its own layers')
+        for (const auto & d : session.devices) {
+            if (d->heat_experts != ne) {
+                continue;
+            }
+            if (total.size() < d->heat.size()) {
+                total.resize(d->heat.size(), 0);
+            }
+            for (size_t i = 0; i < d->heat.size(); i++) {
+                total[i] += d->heat[i];
+            }
         }
-        if (total.size() < d->heat.size()) {
-            total.resize(d->heat.size(), 0);
-        }
-        for (size_t i = 0; i < d->heat.size(); i++) {
-            total[i] += d->heat[i];
-        }
+    }
+    // only what the previous saves did not persist
+    std::vector<uint64_t> delta = total;
+    const size_t saved_n = std::min(session.heat_saved.size(), delta.size());
+    for (size_t i = 0; i < saved_n; i++) {
+        delta[i] = total[i] > session.heat_saved[i] ? total[i] - session.heat_saved[i] : 0;
     }
     std::vector<moe_cache_ranked_expert> old;
     uint32_t nl = 0, nx = 0;
@@ -5846,21 +5877,34 @@ static void moe_cache_profile_save_heat(moe_cache_session & session) {
         for (const auto & r : old) {
             const size_t i = (size_t) r.layer * ne + r.expert;
             if (r.expert < ne) {
-                if (total.size() <= i) total.resize(i + 1, 0);
-                total[i] += r.heat;
+                if (delta.size() <= i) delta.resize(i + 1, 0);
+                delta[i] += r.heat;
             }
         }
     }
+    if (total.size() < delta.size()) {
+        total.resize(delta.size(), 0);
+    }
     std::vector<moe_cache_ranked_expert> ranked;
-    for (size_t i = 0; i < total.size(); i++) {
-        if (total[i]) {
-            ranked.push_back({ (int) (i / ne), (int) (i % ne), (uint32_t) std::min<uint64_t>(total[i], UINT32_MAX) });
+    for (size_t i = 0; i < delta.size(); i++) {
+        if (delta[i]) {
+            ranked.push_back({ (int) (i / ne), (int) (i % ne), (uint32_t) std::min<uint64_t>(delta[i], UINT32_MAX) });
         }
     }
     std::sort(ranked.begin(), ranked.end(), [](const auto & a, const auto & b) {
         return a.heat != b.heat ? a.heat > b.heat : a.layer != b.layer ? a.layer < b.layer : a.expert < b.expert;
     });
-    const std::string tmp = std::string(path) + ".tmp";
+    // unique tmp per session: several sessions (main, draft, vision) save the same file
+    char suffix[80];
+#if defined(_WIN32)
+    const long process_id = _getpid();
+#elif defined(__linux__) || defined(__APPLE__) || defined(__FreeBSD__) || defined(__NetBSD__) || defined(__OpenBSD__) || defined(__DragonFly__)
+    const long process_id = (long)getpid();
+#else
+    const long process_id = 0;
+#endif
+    snprintf(suffix, sizeof(suffix), ".tmp-%ld-%p", process_id, (void *) &session);
+    const std::string tmp = std::string(path) + suffix;
     std::FILE * f = std::fopen(tmp.c_str(), "wb");
     if (!f) {
         return;
@@ -5872,10 +5916,42 @@ static void moe_cache_profile_save_heat(moe_cache_session & session) {
         ok = ok && std::fwrite(le, 2, 2, f) == 2 && std::fwrite(&r.heat, 4, 1, f) == 1;
     }
     ok = std::fclose(f) == 0 && ok;
-    if (ok && std::rename(tmp.c_str(), path) == 0) {
+    // std::rename fails on Windows when the target exists (the seed file does): replace it instead
+#ifdef _WIN32
+    const bool replaced = MoveFileExA(tmp.c_str(), path, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != 0;
+#else
+    const bool replaced = std::rename(tmp.c_str(), path) == 0;
+#endif
+    if (ok && replaced) {
+        session.heat_saved = std::move(total);
         MOE_CACHE_LOG("[moe-cache] profile: %zu (layer, expert) pairs written to %s\n", ranked.size(), path);
+        std::fprintf(stderr, "[moe-cache] heat saved: %zu (layer, expert) pairs -> %s\n", ranked.size(), path);
+        std::fflush(stderr);
     } else {
         std::remove(tmp.c_str());
+        std::fprintf(stderr, "[moe-cache] heat save FAILED for %s\n", path);
+        std::fflush(stderr);
+    }
+}
+
+// the autosave thread: saves the heat every GGML_CUDA_MOE_CACHE_PROFILE_SAVE_INTERVAL_S seconds (default 60, 0
+// disables the thread), stops on session.stopping. Started with the session when PROFILE_SAVE is set.
+static void moe_cache_heat_saver(moe_cache_session & session) {
+    static const int interval_s = getenv("GGML_CUDA_MOE_CACHE_PROFILE_SAVE_INTERVAL_S")
+        ? atoi(getenv("GGML_CUDA_MOE_CACHE_PROFILE_SAVE_INTERVAL_S")) : 60;
+    if (interval_s <= 0) {
+        return;
+    }
+    std::fprintf(stderr, "[moe-cache] heat autosave every %d s\n", interval_s);
+    std::fflush(stderr);
+    while (true) {
+        {
+            std::unique_lock<std::mutex> lock(session.mu);
+            if (session.cv.wait_for(lock, std::chrono::seconds(interval_s), [&session] { return session.stopping.load(); })) {
+                break;
+            }
+        }
+        moe_cache_profile_save_heat(session);
     }
 }
 
