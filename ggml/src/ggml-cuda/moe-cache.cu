@@ -7668,6 +7668,11 @@ void * ggml_cuda_host_rows_buffer(size_t bytes) {
     constexpr bool on_default = false;
 #endif
     static const bool on = getenv("GGML_CUDA_HOST_ROWS") ? atoi(getenv("GGML_CUDA_HOST_ROWS")) != 0 : on_default;
+    static bool told = false;
+    if (!told) {
+        told = true;
+        MOE_CACHE_PRINT("[moe-cache] host rows: %s (buffer %u MiB)\n", on ? "on" : "off", HOST_ROWS_CAP >> 20);
+    }
     if (!on || bytes > HOST_ROWS_CAP) {
         return nullptr;
     }
