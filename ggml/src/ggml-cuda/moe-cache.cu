@@ -9725,7 +9725,7 @@ static void moe_tl_account(moe_hosted_state * st, uint32_t seq) {
             const double * a = st->tlk_sum[card.index];
             if (a[0] > 0) {
                 const double m = a[0] * 1e3;
-                GGML_LOG_INFO("moe timeline: card %d chain, us per layer (%lld): publication -> plan seen %.1f; copies %.1f; "
+                MOE_CACHE_PRINT("moe timeline: card %d chain, us per layer (%lld): publication -> plan seen %.1f; copies %.1f; "
                         "its rows %.1f; moved experts' wait %.1f, their rows %.1f; plan seen -> done %.1f; done -> merge passed "
                         "%.1f (hosting card plan seen -> merge reached %.1f); idle before the plan %.1f\n", card.index,
                         (long long) a[0], a[1] / m, a[2] / m, a[3] / m, a[4] / m, a[5] / m, a[6] / m, a[7] / m, a[8] / m, a[9] / m);
@@ -9734,18 +9734,18 @@ static void moe_tl_account(moe_hosted_state * st, uint32_t seq) {
         const double n = (double) st->tl_n, nw = std::max<double>(1, (double) st->tl_nw);
         const double plan_rt = st->tl_sum[0] / n, plan_host = st->tl_sum[1] / n;
         const double win_gpu = st->tl_sum[2] / nw, win_host = st->tl_sum[3] / nw, seg = st->tl_sum[4] / nw, gap = st->tl_sum[5] / nw;
-        GGML_LOG_INFO("moe timeline: %lld layers (%lld with CPU rows), us per layer: plan round trip GPU %.1f, plan host %.1f "
+        MOE_CACHE_PRINT("moe timeline: %lld layers (%lld with CPU rows), us per layer: plan round trip GPU %.1f, plan host %.1f "
                 "-> relays publication + plan %.1f; window GPU %.1f, CPU host %.1f -> relay rows - relay plan %.1f; "
                 "GPU segment %.1f, host gap %.1f -> relays rows + publication %.1f; stream query %.2f us (%lld)\n",
                 (long long) st->tl_n, (long long) st->tl_nw, plan_rt / 1e3, plan_host / 1e3, (plan_rt - plan_host) / 1e3,
                 win_gpu / 1e3, win_host / 1e3, (win_gpu - win_host) / 1e3, seg / 1e3, gap / 1e3, (gap - seg) / 1e3,
                 st->tl_q_n ? (double) st->tl_q_ns / st->tl_q_n / 1e3 : 0.0, (long long) st->tl_q_n);
         const double * a = st->tl_sum;
-        GGML_LOG_INFO("moe timeline: GPU late at the merge %.1f us per layer, moved expert wait %.1f us per layer; layers late "
+        MOE_CACHE_PRINT("moe timeline: GPU late at the merge %.1f us per layer, moved expert wait %.1f us per layer; layers late "
                 "> 10 us: waiting for the moved expert %.1f %% (late %.1f us, copy wait %.1f us), otherwise %.1f %% (late %.1f us)\n",
                 a[12] / nw / 1e3, a[13] / nw / 1e3, 100 * a[6] / nw, a[6] ? a[8] / a[6] / 1e3 : 0.0, a[6] ? a[10] / a[6] / 1e3 : 0.0,
                 100 * a[7] / nw, a[7] ? a[9] / a[7] / 1e3 : 0.0);
-        GGML_LOG_INFO("moe timeline: GPU work in the window (plan seen -> merge, without the moved expert wait) %.1f us, "
+        MOE_CACHE_PRINT("moe timeline: GPU work in the window (plan seen -> merge, without the moved expert wait) %.1f us, "
                 "CPU window %.1f us; in the late layers without copy wait: GPU work %.1f us\n",
                 a[16] / nw / 1e3, a[17] / nw / 1e3, a[7] ? a[15] / a[7] / 1e3 : 0.0);
     }
@@ -10473,7 +10473,7 @@ static moe_hosted_state * moe_hosted_state_for(moe_cache_session & session, moe_
             g_tl_m = moe_hosted_device_ptr(g_tl_h);
             st->tl_tick_ns = 1e6 / rate_khz;
             st->tl_host.assign(MOE_TL_RING * 3, 0);
-            GGML_LOG_INFO("moe timeline: GPU wall clock %d kHz\n", rate_khz);
+            MOE_CACHE_PRINT("moe timeline: GPU wall clock %d kHz\n", rate_khz);
         }
     }
     st->server = std::thread(moe_hosted_server, st.get());
