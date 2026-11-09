@@ -129,6 +129,8 @@ static inline bool ggml_type_is_exl3(ggml_type) { return false; }
 #endif
 
 #define MOE_CACHE_LOG(...) GGML_LOG_INFO(__VA_ARGS__)
+// ggml-cuda INFO never reaches the server log, so stats and failures print straight to stderr
+#define MOE_CACHE_PRINT(...) std::fprintf(stderr, __VA_ARGS__)
 
 static constexpr int    moe_cache_cc_forced_min               = 700;
 static constexpr int    moe_cache_cc_ampere                   = 800;
@@ -2243,7 +2245,7 @@ static void moe_cache_worker(moe_cache_session * session, moe_cache_device * dev
                     if (f_last > 0 && t0 - f_last < 5000) f_idle += t0 - f_last;
                     f_last = t2;
                     if (++f_n % 2000 == 0) {
-                        GGML_LOG_INFO("fill: %lld fills, per fill: memcpy %.1f us, copy+sync %.1f us (call %.1f), between fills %.1f us\n",
+                        MOE_CACHE_PRINT("fill: %lld fills, per fill: memcpy %.1f us, copy+sync %.1f us (call %.1f), between fills %.1f us\n",
                                 (long long) f_n, (double) f_cpy / 2000, (double) f_dma / 2000, (double) f_call / 2000, (double) f_idle / 2000);
                         f_cpy = f_dma = f_idle = f_call = 0;
                     }
@@ -4166,12 +4168,12 @@ static void moe_cache_log_stats(moe_cache_device & device) {
     }
     const long long total = device.hits + device.misses;
     if (moe_cache_expert_split()) {
-        MOE_CACHE_LOG("[moe-cache] CUDA%d expert split: planned rows here %lld, in another card's cache %lld, nowhere %lld; "
+        MOE_CACHE_PRINT("[moe-cache] CUDA%d expert split: planned rows here %lld, in another card's cache %lld, nowhere %lld; "
                 "admissions sent to another card %lld; experts moved to another card %lld; rows other cards found here %lld\n",
                 device.physical, device.split_local, device.split_remote, device.split_absent, device.split_admit_away,
                 device.split_moved_away, device.split_served);
     }
-    MOE_CACHE_LOG("[moe-cache] CUDA%d hits=%lld/%lld (%.1f%%) used=%zu/%zu enqueued=%lld filled=%lld fill-fail=%lld evictions=%lld skips=%lld admission=%lld queue=%zu jobs/%zu MiB dispatch-fail=%lld collect-fail=%lld act-dedup=%lld cpu-overlap=%lld fusion=%lld/%lld pairs=%lld/%lld/%lld/%lld fusion-attempts=%lld fusion-nodes=%lld full-fusion=%lld/%lld down-mmv-dedicated=%lld bypass=%lld\n",
+    MOE_CACHE_PRINT("[moe-cache] CUDA%d hits=%lld/%lld (%.1f%%) used=%zu/%zu enqueued=%lld filled=%lld fill-fail=%lld evictions=%lld skips=%lld admission=%lld queue=%zu jobs/%zu MiB dispatch-fail=%lld collect-fail=%lld act-dedup=%lld cpu-overlap=%lld fusion=%lld/%lld pairs=%lld/%lld/%lld/%lld fusion-attempts=%lld fusion-nodes=%lld full-fusion=%lld/%lld down-mmv-dedicated=%lld bypass=%lld\n",
             device.physical, device.hits, total,
             total ? 100.0 * (double)device.hits / (double)total : 0.0,
             used, slots, device.inserts, device.fills, device.fill_failures,
@@ -4197,12 +4199,12 @@ static void moe_cache_log_stats(moe_cache_device & device) {
         }
     }
     if (device.prefill_resident + device.prefill_streamed > 0) {
-        MOE_CACHE_LOG("[moe-cache] CUDA%d prefill: experts read in place %lld, copied %lld (%.1f %% in place)\n",
+        MOE_CACHE_PRINT("[moe-cache] CUDA%d prefill: experts read in place %lld, copied %lld (%.1f %% in place)\n",
                 device.physical, device.prefill_resident, device.prefill_streamed,
                 100.0 * device.prefill_resident / (device.prefill_resident + device.prefill_streamed));
     }
     if (zone_pools) {
-        MOE_CACHE_LOG("[moe-cache] CUDA%d zone: pools=%d slots=%zu lends=%lld restores=%lld moved=%lld evicted=%lld last-lend=%.2f ms checked=%lld failed=%lld\n",
+        MOE_CACHE_PRINT("[moe-cache] CUDA%d zone: pools=%d slots=%zu lends=%lld restores=%lld moved=%lld evicted=%lld last-lend=%.2f ms checked=%lld failed=%lld\n",
                 device.physical, zone_pools, zone_slots, device.zone_lends,
                 device.zone_restores, device.zone_moves, device.zone_evictions,
                 device.zone_lend_ms, device.zone_checked, device.zone_check_failed);
@@ -4225,7 +4227,7 @@ static void moe_cache_log_configuration(moe_cache_session & session) {
             std::to_string(session.config.readmit_after) + "-replace"
         : "1-complete/" + std::to_string(session.config.admit_after) +
             "-partial/" + std::to_string(session.config.readmit_after) + "-replace";
-    MOE_CACHE_LOG("[moe-cache] configured: mode=%s devices=%zu budget=%s reserve=%zu MiB min-slab=%zu MiB min-expert=%zu KiB max-batch=%d inserts=%d admit=%s cpu-overlap=%s fills=%s expert-parallel=%d down-mmv=%s\n",
+    MOE_CACHE_PRINT("[moe-cache] configured: mode=%s devices=%zu budget=%s reserve=%zu MiB min-slab=%zu MiB min-expert=%zu KiB max-batch=%d inserts=%d admit=%s cpu-overlap=%s fills=%s expert-parallel=%d down-mmv=%s\n",
             session.config.automatic ? "auto" : "on",
             session.devices.size(), budget.c_str(),
             session.config.reserve_mb,
@@ -5602,7 +5604,7 @@ static void moe_cache_zone_check(moe_cache_device & device, moe_cache_pool & poo
     }
     if (!same) {
         device.zone_check_failed++;
-        MOE_CACHE_LOG("[moe-cache] CUDA%d ZONE CHECK FAILED slot=%d expert=%d\n",
+        MOE_CACHE_PRINT("[moe-cache] CUDA%d ZONE CHECK FAILED slot=%d expert=%d\n",
                 device.physical, index, slot.key.expert);
     }
 }
@@ -6238,7 +6240,8 @@ static void moe_cache_preload(const moe_cache_session & session, moe_cache_devic
     }
     device.preload_bytes = bytes;
     device.preload_us = ggml_time_us() - t0;
-    MOE_CACHE_LOG("[moe-cache] CUDA%d preload: %zu experts (%.2f GiB) from %s in %.2f s, %zu of %u pairs outside the model\n",
+    MOE_CACHE_PRINT("[moe-cache] CUDA%d preload: %zu experts (%.2f GiB) from %s in %.2f s, %zu of %u pairs outside the model
+",
             device.physical, loaded, bytes / 1073741824.0, path, (ggml_time_us() - t0) / 1e6, skipped, n_ranked);
 }
 
@@ -6835,7 +6838,7 @@ static int moe_cache_lend(void * opaque, void * backend, size_t bytes, void ** z
             for (const auto & kv : pool.map) {
                 if (kv.second >= pool.zone_begin && kv.second < pool.zone_end) {
                     device->zone_check_failed++;
-                    MOE_CACHE_LOG("[moe-cache] CUDA%d ZONE CHECK FAILED: map entry in lent zone\n",
+                    MOE_CACHE_PRINT("[moe-cache] CUDA%d ZONE CHECK FAILED: map entry in lent zone\n",
                             device->physical);
                     break;
                 }
@@ -10047,12 +10050,12 @@ static void moe_hosted_serve_one(moe_hosted_state * st, uint32_t seq) {
             const double n = (double) stats_every;
             if (pregate_k > 0) {
                 std::lock_guard<std::mutex> lock(st->session->mu);
-                GGML_LOG_INFO("pregate: predicted %lld, candidates %lld, copied %lld\n",
+                MOE_CACHE_PRINT("pregate: predicted %lld, candidates %lld, copied %lld\n",
                         (long long) st->device->pregate_predicted, (long long) st->device->pregate_enqueued,
                         (long long) st->device->pregate_served);
             }
-            GGML_LOG_INFO("moe hosted: %lld experts moved to the GPU\n", (long long) st->split_moved);
-            GGML_LOG_INFO("moe hosted: %lld layers: GPU between layers %.1f us, plan %.1f us, CPU rows %.1f us (%.2f rows)\n",
+            MOE_CACHE_PRINT("moe hosted: %lld experts moved to the GPU\n", (long long) st->split_moved);
+            MOE_CACHE_PRINT("moe hosted: %lld layers: GPU between layers %.1f us, plan %.1f us, CPU rows %.1f us (%.2f rows)\n",
                     (long long) st->st_n, st->st_gaps ? (double) st->st_gap / st->st_gaps : 0.0,
                     (double) st->st_plan / st->st_n, (double) st->st_cpu / st->st_n, (double) st->st_rows / st->st_n);
             {
@@ -10435,15 +10438,15 @@ static moe_hosted_state * moe_hosted_state_for(moe_cache_session & session, moe_
         st->cpu_scale = atof(scale);
         st->cal_left = 0;
     }
-    MOE_CACHE_LOG("[moe-cache] CUDA%d CPU rows: %d threads\n", device.physical, st->n_threads);
+    MOE_CACHE_PRINT("[moe-cache] CUDA%d CPU rows: %d threads\n", device.physical, st->n_threads);
     {
         std::string desc;
         const double rate = moe_cache_link_rate(device, desc);
         if (rate > 0.0) {
             st->pcie_bytes_per_us = rate;
-            MOE_CACHE_LOG("[moe-cache] CUDA%d PCIe: %s\n", device.physical, desc.c_str());
+            MOE_CACHE_PRINT("[moe-cache] CUDA%d PCIe: %s\n", device.physical, desc.c_str());
         } else {
-            MOE_CACHE_LOG("[moe-cache] CUDA%d PCIe: link not readable, %.1f GB/s assumed for a copy\n", device.physical,
+            MOE_CACHE_PRINT("[moe-cache] CUDA%d PCIe: link not readable, %.1f GB/s assumed for a copy\n", device.physical,
                     st->pcie_bytes_per_us / 1000.0);
         }
     }
