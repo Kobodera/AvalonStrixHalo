@@ -6240,8 +6240,7 @@ static void moe_cache_preload(const moe_cache_session & session, moe_cache_devic
     }
     device.preload_bytes = bytes;
     device.preload_us = ggml_time_us() - t0;
-    MOE_CACHE_PRINT("[moe-cache] CUDA%d preload: %zu experts (%.2f GiB) from %s in %.2f s, %zu of %u pairs outside the model
-",
+    MOE_CACHE_PRINT("[moe-cache] CUDA%d preload: %zu experts (%.2f GiB) from %s in %.2f s, %zu of %u pairs outside the model\n",
             device.physical, loaded, bytes / 1073741824.0, path, (ggml_time_us() - t0) / 1e6, skipped, n_ranked);
 }
 
