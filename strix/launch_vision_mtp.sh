@@ -20,7 +20,9 @@ done
 
 # Heat persistence (this fork's autosave): the file is read at boot and rewritten
 # every 60 s, so restarts prefill the cache from the routing actually observed,
-# on top of the shipped moe-cache-ranking.bin.
+# on top of the shipped moe-cache-ranking.bin. Note: heat is only counted while
+# the hosted expert cache runs; on this iGPU it resolves off (see README), so the
+# file stays unwritten until the cache engages (bigger BIOS GTT, smaller context).
 export GGML_CUDA_MOE_CACHE_PROFILE_SAVE="${GGML_CUDA_MOE_CACHE_PROFILE_SAVE:-$MODELS/moe-cache-profile.bin}"
 
 # Warmup at boot: the text pass, plus the ported vision pass when --mmproj is set

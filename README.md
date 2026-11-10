@@ -98,7 +98,7 @@ The launch recipe above, greedy decoding, 2 draft MTP tokens, warm expert routin
 
 | case | this box | upstream's 7900 XT for scale |
 |---|---|---|
-| generation, 512 tokens, warm | **37.8 t/s** (stable over 3 trials) | 98.4 t/s |
+| generation, 512 tokens, warm | **38.2 t/s** steady (37.4-38.4 across 10 trials; first request after boot ~27) | 98.4 t/s |
 | prefill 12k tokens | 689 t/s | - |
 | prefill 48k tokens | 727 t/s | - |
 | prefill 190k tokens | 780 t/s | 1,491 t/s |
@@ -115,11 +115,20 @@ health stays green under churn. GTT peaked at 59.7 of 61.1 GiB with 256k context
 tight, but it fits this BIOS setting. Raise the BIOS GTT before growing context or
 the cache budget.
 
-One Strix-specific A/B, worth knowing: **`GGML_CUDA_MOE_CACHE_MODE=off` measured the
-same as the default cache** (35.4-37.7 vs 37.4-37.8 t/s, same 59.7 GiB GTT). On a
-dGPU the cache avoids PCIe traffic; here the experts live in the same LPDDR5x the
-GPU reads anyway, so the cache neither pays nor hurts. This launch keeps the upstream
-default.
+Tuning tried, all measured (each = a full reboot + 3-4 x 512-token trials):
+- expert cache: default resolves to **off** here - `--fit` sees the 61 GiB GTT as
+  device memory and places every layer on the iGPU, so the scheduler finds no
+  host-resident experts to cache. Forcing `GGML_CUDA_MOE_CACHE_MODE=on` with a
+  4 GiB budget: no change (37.5-38.3). Off vs default: no change (35.4-37.8).
+  On a dGPU the cache avoids PCIe traffic; here the experts sit in the same
+  LPDDR5x the GPU reads anyway. Keep the upstream default.
+- `-t 32`: much worse (16-22 t/s). Expert rows are read by the GPU through the
+  host-mapped buffer; piling CPU threads on the same DRAM only adds contention.
+  The default thread count is right.
+- `-lm mmap+mlock`: no change (27 / 37.4 / 38.3 / 38.2). The slow first request
+  is graph capture, not page eviction, so pinning 36 GiB buys nothing.
+- `--spec-draft-n-max 3`: not pursued - chained MTP drafts fall apart, upstream
+  validated 2 for this model and MTP head.
 
 ## License
 
