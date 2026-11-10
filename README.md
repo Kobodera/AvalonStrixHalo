@@ -93,12 +93,33 @@ strix/churn_test.sh                 # IMG/CHAT/TOOLS mixed workload stability ga
 
 ## Measured on the MS-S1 Max
 
-Being measured; this table will carry the validated numbers for the recipe above.
+The launch recipe above, greedy decoding, 2 draft MTP tokens, warm expert routing
+(Nov 10):
 
-| case | generation | prefill |
+| case | this box | upstream's 7900 XT for scale |
 |---|---|---|
-| 32k context, short prompt, MTP | tbd | tbd |
-| 256k context, short prompt, MTP | tbd | tbd |
+| generation, 512 tokens, warm | **37.8 t/s** (stable over 3 trials) | 98.4 t/s |
+| prefill 12k tokens | 689 t/s | - |
+| prefill 48k tokens | 727 t/s | - |
+| prefill 190k tokens | 780 t/s | 1,491 t/s |
+| boot to serving | 6 min 4 s (first load, cold pages) | - |
+| first image after boot, no warmup | 6.5 s, OCR 3/3 | - |
+
+The iGPU has no dedicated memory and less compute than a 7900 XT: on this box the
+experts and the dense weights are all read from the same LPDDR5x the CPU writes into,
+so the ceiling is memory bandwidth shared with everything, not the PCIe feed upstream
+works against. MTP acceptance measured 52 %, mean draft length 2.0.
+
+Stability gates: `vision_test.sh` 3/3 OCR, `churn_test.sh` IMG/CHAT/TOOLS 6/6 pass,
+health stays green under churn. GTT peaked at 59.7 of 61.1 GiB with 256k context:
+tight, but it fits this BIOS setting. Raise the BIOS GTT before growing context or
+the cache budget.
+
+One Strix-specific A/B, worth knowing: **`GGML_CUDA_MOE_CACHE_MODE=off` measured the
+same as the default cache** (35.4-37.7 vs 37.4-37.8 t/s, same 59.7 GiB GTT). On a
+dGPU the cache avoids PCIe traffic; here the experts live in the same LPDDR5x the
+GPU reads anyway, so the cache neither pays nor hurts. This launch keeps the upstream
+default.
 
 ## License
 

@@ -30,12 +30,15 @@ def health():
         return False
 
 try:
-    from PIL import Image
+    from PIL import Image, ImageDraw, ImageFont
     img = Image.new("RGB", (512, 160), "white")
-    from PIL import ImageDraw
     d = ImageDraw.Draw(img)
-    d.text((10, 15), "CHURN ROUND MARKER 7749", fill="black")
-    d.text((10, 70), "alpha bravo charlie delta", fill="black")
+    try:
+        font = ImageFont.load_default(size=32)   # bigger glyphs: OCR reads small bitmaps with stray spaces
+    except TypeError:
+        font = ImageFont.load_default()
+    d.text((10, 15), "CHURN ROUND MARKER 7749", fill="black", font=font)
+    d.text((10, 70), "alpha bravo charlie delta", fill="black", font=font)
     buf = io.BytesIO(); img.save(buf, format="PNG")
     b64 = base64.b64encode(buf.getvalue()).decode()
 except ImportError:
@@ -58,8 +61,9 @@ for r in range(1, rounds + 1):
         print(f"ROUND {r} PRE: HEALTH FAIL - possible wedge"); nfail += 1; continue
 
     ok, s, txt, _ = post(img_body())
-    good = ok and "7749" in txt and "alpha bravo" in txt
-    print(f"ROUND {r} VISION: ok={ok} {s:.1f}s match={'7749' in txt}")
+    tight = "".join(txt.split())   # OCR inserts stray spaces in digit runs
+    good = ok and "7749" in tight and "alphabravo" in tight
+    print(f"ROUND {r} VISION: ok={ok} {s:.1f}s match={'7749' in tight}")
     if good: npass += 1
     else: nfail += 1; print("  text:", txt[:120])
 

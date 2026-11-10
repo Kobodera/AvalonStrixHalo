@@ -18,18 +18,32 @@ for f in "$exe" "$model" "$draft" "$mmproj"; do
     [ -e "$f" ] || { printf 'missing file: %s (run strix/setup.sh first)\n' "$f" >&2; exit 1; }
 done
 
-# Vision warmup at boot: the encoder pass plus one decoder pass (env names are
-# the ones the 3090 fork uses). The WDDM first-image deadlock it fixes is a
-# Windows thing; here it mainly warms the vision expert routing. Set
-# AVALON_FAST_BOOT=1 to skip it and pay ~100 s slower on the first image.
+# Heat persistence (this fork's autosave): the file is read at boot and rewritten
+# every 60 s, so restarts prefill the cache from the routing actually observed,
+# on top of the shipped moe-cache-ranking.bin.
+export GGML_CUDA_MOE_CACHE_PROFILE_SAVE="${GGML_CUDA_MOE_CACHE_PROFILE_SAVE:-$MODELS/moe-cache-profile.bin}"
+
+# Warmup at boot: the text pass, plus the ported vision pass when --mmproj is set
+# (env names are the ones the 3090 fork uses). The WDDM first-image deadlock the
+# warmup was written for is a Windows thing; here it mainly warms the vision
+# expert routing. AVALON_FAST_BOOT=1 skips the whole warmup and pays it on the
+# first requests instead.
+warmup=--warmup
 if [ "${AVALON_FAST_BOOT:-0}" = 1 ]; then
+    warmup=--no-warmup
     export GGML_CUDA_MOE_VISION_DECODER_WARMUP=0
 fi
 
+# -lm mmap: the HIP backend reports mmap_support=false for any iGPU (Strix Halo's
+# 8060S included), so load mode "auto" quietly drops mmap and the packed experts
+# gather in llama-model-loader then asserts. The gather only needs the file mmap
+# on the host side, the copy to the GPU is a normal memcpy: force it.
 exec "$exe" -m "$model" \
     -md "$draft" \
     --mmproj "$mmproj" --image-min-tokens 1024 \
+    -lm mmap \
     -c 262144 -b 9536 -ub 9536 -fa on -ctk q8_0 -ctv q4_0 --jinja --parallel 1 \
     --spec-type draft-mtp --spec-draft-n-max 2 -ubd 256 -ctkd q8_0 -ctvd q8_0 \
+    "$warmup" \
     --host "${AVALON_HOST:-0.0.0.0}" --port "${AVALON_PORT:-8080}" \
     "$@"
