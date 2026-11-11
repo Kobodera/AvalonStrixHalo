@@ -96,9 +96,9 @@ strix/churn_test.sh                 # IMG/CHAT/TOOLS mixed workload stability ga
 The launch recipe above, greedy decoding, 2 draft MTP tokens, warm expert routing
 (Nov 10):
 
-| case | this box | upstream's 7900 XT for scale |
-|---|---|---|
-| generation, 512 tokens, warm | **38.2 t/s** steady (37.4-38.4 across 10 trials; first request after boot ~27) | 98.4 t/s |
+| case | this box | 7900 XT (upstream) | RTX 3090 / X5950X, DDR4-2133 (Avalon3090) |
+|---|---|---|---|
+| generation, 512 tokens, warm | **38.2 t/s** steady (37.4-38.4 across 10 trials; first request after boot ~27) | 98.4 t/s | ~55 t/s |
 | prefill 12k tokens | 689 t/s | - |
 | prefill 48k tokens | 727 t/s | - |
 | prefill 190k tokens | 780 t/s | 1,491 t/s |
@@ -109,6 +109,15 @@ The iGPU has no dedicated memory and less compute than a 7900 XT: on this box th
 experts and the dense weights are all read from the same LPDDR5x the CPU writes into,
 so the ceiling is memory bandwidth shared with everything, not the PCIe feed upstream
 works against. MTP acceptance measured 52 %, mean draft length 2.0.
+
+Two ceiling estimates agree with the measurement: scaling the 7900 XT's compute
+(96 CU) to the 8060S (40 CU) predicts ~41 t/s, and 38.2 t/s x ~5.5 GB of IQ3_KS
+weights read per token is ~210 GB/s, close to the ~230 GB/s this LPDDR5x delivers.
+The 3090 beats it on decode not through the software but through 936 GB/s of
+dedicated GDDR6X holding dense weights plus a 12 GB expert cache: the Strix has no
+fast pool to hide behind. What it gives instead: every expert fully resident with
+256k context, no cache budget tuning or WDDM deadlock workarounds, and a 6.5 s
+first image instead of a ~100 s boot warmup.
 
 Stability gates: `vision_test.sh` 3/3 OCR, `churn_test.sh` IMG/CHAT/TOOLS 6/6 pass,
 health stays green under churn. GTT peaked at 59.7 of 61.1 GiB with 256k context:
