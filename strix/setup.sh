@@ -32,6 +32,11 @@ for f in /sys/class/drm/card*/device/mem_info_vram_total; do
 done
 [ "$gpu_seen" = 1 ] || die "no amdgpu DRM device found (is the amdgpu driver loaded?)"
 
+# a seat-logged-in desktop user gets GPU access from logind; a pure SSH session needs the groups
+if ! [ -r /dev/kfd ] || ! [ -w /dev/kfd ]; then
+    printf '[warn] /dev/kfd is not accessible to this user (a local desktop login gets it from logind; an SSH session does not).\n       fix: sudo usermod -aG render,video "$USER"   then log out and back in\n'
+fi
+
 ram_kb=$(awk '/MemTotal/ {print $2}' /proc/meminfo)
 [ "$ram_kb" -gt $((56 * 1024 * 1024)) ] || printf '[warn] %d GB RAM: the experts (~49 GiB) want to live fully in RAM\n' $((ram_kb / 1048576))
 disk_free=$(df -B1 --output=avail "$(dirname "$REPO")" | tail -1 | tr -d ' ')

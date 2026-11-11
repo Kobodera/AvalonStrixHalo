@@ -47,6 +47,10 @@ git clone https://github.com/Kobodera/AvalonStrixHalo.git && cd AvalonStrixHalo
 strix/setup.sh
 ```
 
+A local desktop login gets GPU access from logind; a headless SSH session does not -
+`setup.sh` warns about it. Fix once: `sudo usermod -aG render,video "$USER"`, log out
+and back in.
+
 `setup.sh` checks the box, builds `llama-server` and `llama-quantize` for gfx1151,
 downloads all model files (~96 GB, resumable, SHA256-verified against
 `strix/model_manifest.tsv`, same manifest as the 3090 ops repo) and quantizes the vision
