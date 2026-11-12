@@ -70,12 +70,31 @@ ROCM_PATH=/usr cmake -B build_hip -G Ninja -DGGML_HIP=ON -DAMDGPU_TARGETS=gfx115
 cmake --build build_hip -j$(nproc) --target llama-server llama-quantize
 ```
 
-Then launch the server (256k context + MTP + vision, OpenAI API on port 8080):
+Then launch the server (256k context + MTP + vision, OpenAI API on `0.0.0.0:8080`):
 
 ```bash
-strix/launch_vision_mtp.sh          # AVALON_PORT, AVALON_HOST, AVALON_FAST_BOOT envs
-strix/vision_test.sh                # sends a PNG, expects the OCR text back
-strix/churn_test.sh                 # IMG/CHAT/TOOLS mixed workload stability gate
+strix/launch_vision_mtp.sh
+```
+
+Expect about 6 minutes to `listening`: it loads 89 GiB and registers the expert arena
+with the GPU driver. The boot log shows `[moe-cache] heat autosave` and
+`warming up the vision tower` along the way. Variants:
+
+```bash
+strix/launch_vision_mtp.sh > ~/avalon.log 2>&1 &   # background, then watch speeds:
+strix/watch_speeds.sh ~/avalon.log                 # 3 s windows + per-request summaries
+AVALON_FAST_BOOT=1 strix/launch_vision_mtp.sh      # skip the text+vision warmup (~2 min saved)
+AVALON_PORT=8123 AVALON_HOST=127.0.0.1 strix/launch_vision_mtp.sh
+strix/launch_vision_mtp.sh -b 32768                # extra llama-server flags pass through
+```
+
+The models live in `~/Avalon/models/Qwen3.8-Flash-Next-Avalon-GGUF` by default
+(`AVALON_MODEL_DIR=/path` to move them). Once it is up, verify:
+
+```bash
+strix/vision_test.sh    # sends a PNG, expects the OCR text back
+strix/churn_test.sh     # IMG/CHAT/TOOLS mixed workload stability gate
+strix/bench.sh          # decode + prefill numbers against the live server
 ```
 
 ## What this fork carries on top of upstream
