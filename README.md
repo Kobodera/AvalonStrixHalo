@@ -133,14 +133,20 @@ experts and the dense weights are all read from the same LPDDR5x the CPU writes 
 so the ceiling is memory bandwidth shared with everything, not the PCIe feed upstream
 works against. MTP acceptance measured 52 %, mean draft length 2.0.
 
-Two ceiling estimates agree with the measurement: scaling the 7900 XT's compute
-(96 CU) to the 8060S (40 CU) predicts ~41 t/s, and 38.2 t/s x ~5.5 GB of IQ3_KS
-weights read per token is ~210 GB/s, close to the ~230 GB/s this LPDDR5x delivers.
-The 3090 beats it on decode not through the software but through 936 GB/s of
-dedicated GDDR6X holding dense weights plus a 12 GB expert cache: the Strix has no
-fast pool to hide behind. What it gives instead: every expert fully resident with
-256k context, no cache budget tuning or WDDM deadlock workarounds, and a 6.5 s
-first image instead of a ~100 s boot warmup.
+Where the bytes go, measured from the model's own geometry rather than guessed: 48
+packed expert layers x 512 experts, expert arena ~49 GiB, so ~2.07 MiB per expert and
+10 experts active per layer per token: **~1.07 GiB of expert reads per decoded token**,
+about 40 GB/s at 38.2 t/s. The CPU-side STREAM triad measures 85-92 GB/s on this box,
+and `gpu_busy_percent` during a decode sits at 92 %. Prefill reads far less (~4-7 GB/s:
+one 51 GiB expert sweep per 9536-token ubatch, each read amortized over ~186 rows) yet
+runs the GPU at 100 % - IQ3_KS dequant has no tensor-core path on RDNA3.5, prefill is
+pure ALU. Two estimates land on the measured 38.2: the 7900 XT's 98.4 t/s scaled by
+CU count (40/96) predicts ~41, and a ~90 GB/s memory subsystem with the GPU 92 % busy
+covers the rest. The 3090 beats it on decode not through the software but through
+936 GB/s of dedicated GDDR6X holding dense weights plus a 12 GB expert cache: the
+Strix has no fast pool to hide behind. What it gives instead: every expert fully
+resident with 256k context, no cache budget tuning or WDDM deadlock workarounds, and
+a 6.5 s first image instead of a ~100 s boot warmup.
 
 Stability gates: `vision_test.sh` 3/3 OCR, `churn_test.sh` IMG/CHAT/TOOLS 6/6 pass,
 health stays green under churn. GTT peaked at 59.7 of 61.1 GiB with 256k context:
@@ -161,6 +167,36 @@ Tuning tried, all measured (each = a full reboot + 3-4 x 512-token trials):
   is graph capture, not page eviction, so pinning 36 GiB buys nothing.
 - `--spec-draft-n-max 3`: not pursued - chained MTP drafts fall apart, upstream
   validated 2 for this model and MTP head.
+
+### Live agent workload (OpenCode game on this server)
+
+25 h continuous serving, ~100 k requests, context climbing from 50 k to 249 k tokens
+before OpenCode compacted: zero restarts, zero wedges, GTT flat at 59.8 GiB throughout
+(KV is fully reserved at boot, so deepening the context costs time, never memory
+surprises).
+
+| context | decode | stretch |
+|---|---|---|
+| 51 k | 41 t/s steady, 46.3 at 93 % acceptance | shallow KV |
+| 113 k | ~31 | prose, 60 % acceptance |
+| 150 k | 41.1 or 31-33 | acceptance 80 % vs 55 % |
+| 203 k | 39-44 | acceptance ~85 % |
+| 248.9 k | 31.0 | the compaction summary itself, 49.6 % acceptance |
+
+Decode at depth = MTP acceptance x KV cost: the 12 attention layers keep ~9.5 MiB of
+KV per 1 k tokens (1.4 GiB at 150 k), read once per step and amortized over 2-2.9
+accepted tokens. Acceptance dominates: predictable game text at 200 k outran prose at
+51 k. Prompt processing is nearly depth-free: a prefix-cached turn evaluates ~20-30
+tokens (~0.5 s) at any depth, 2-8 k token chunks run 365-618 t/s deep, a full
+220,840 token re-fill at max depth ran 602 t/s, and one compaction cycle (summarize
+at ~31 t/s, then re-evaluate the compacted prompt) costs ~4-5 minutes total.
+
+Cold-disk behavior, forced by ballooning the page cache with 40 GiB of tmpfs while
+requests ran: prefill 683 t/s, essentially unchanged - prefill only needs ~4 GB/s of
+weight streaming and this NVMe delivers ~3.7 GB/s under kernel readahead. Decode fell
+to 23.9 t/s during the refill, recovering as pages came back: it wants 40+ GB/s, ten
+times what the disk can give. Full model residency in RAM is the design here, not an
+optimization.
 
 ## License
 
